@@ -1,0 +1,290 @@
+---
+title: "Data Wrangling"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+theme_set(theme_light())
+```
+
+```{r message=FALSE}
+# Read in our CSV's
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+# Make tibbles equal for rbind and bind them together
+data <- bind_rows(
+  train %>% 
+    mutate(tibble = "train"),
+  test %>% 
+    mutate(Survived = as.integer(""), 
+           tibble = "test"))
+```
+
+### What are we missing?
+
+Let's right away get a sense of our missing data.
+
+```{r}
+data %>% 
+  select(everything()) %>%
+  summarise_all(funs(sum(is.na(.))))
+```
+
+
+### Names
+
+Full names in a single column are never a good idea in data. Why don't we organize that column?
+
+```{r}
+# Name column split on '.'
+data$Name %>% 
+  str_split(pattern = "\\.", simplify = TRUE)
+
+# Name column split on ','
+data$Name %>% 
+  str_split(pattern = ",", simplify = TRUE)
+
+# Last name separation seems to be more consistent
+# Separate LastName first
+data <- data %>% 
+  separate(col = Name, into = c("LastName", "TitleFirstMiddle"), sep = ",")
+
+# Modify the single instance where other name includes '.'
+data$TitleFirstMiddle <- data$TitleFirstMiddle %>% 
+  str_replace(pattern = "Elizabeth L. Barrett", replacement = "Elizabeth L Barrett")
+
+# Separate Title from First, Middle and other
+data <- data %>% 
+  separate(col = TitleFirstMiddle, into = c("Title", "FirstMiddleOther"), sep = "\\.")
+
+# Modify 'The Countess' name and title
+data$LastName <- data$LastName %>% 
+  str_replace(pattern = "Rothes", replacement = "Dyer-Edwards")
+data$Title <- data$Title %>% 
+  str_replace(pattern = " the Countess", replacement = "The Countess of Rothes")
+data$FirstMiddleOther <- data$FirstMiddleOther %>% 
+  str_replace(pattern = " of \\(Lucy Noel Martha Dyer-Edwards\\)", replacement = "Lucy Noel Martha")
+
+# Remove beginning empty space
+data$FirstMiddleOther <- data$FirstMiddleOther %>% str_replace(pattern = "^ ", replacement = "")
+data$Title <- data$Title %>% str_replace(pattern = "^ ", replacement = "")
+
+# Let's include a binary variable that indicates whether someone has another name
+data$OtherName <- str_detect(data$FirstMiddleOther, pattern = "\\(")
+```
+
+### Tickets
+
+Let's examine what `Ticket` means and how we can derive information from it.
+
+```{r}
+data %>% 
+  group_by(Ticket) %>% 
+  tally(sort = TRUE)
+
+data %>% 
+  filter(Ticket=="1601")
+
+# Lets separate the ticket letters and numbers,
+# but first we need to clear the spaces and other characters
+data$Ticket <- str_replace_all(string = data$Ticket, pattern = "[^[:alnum:]]", replacement = "")
+
+data$TicketNumber <- as.numeric(str_extract(data$Ticket, "[0-9]+"))
+data$TicketLetter <- str_extract(data$Ticket, "[aA-zZ]+")
+
+# We've found that four 'LINE' tickets were issued, so let's give them ticket #0
+data %>% 
+  filter(is.na(TicketNumber))
+
+data$TicketNumber <- replace_na(data = data$TicketNumber, replace = 0)
+
+# We could populate all missing values of TicketLetter with unknown, 
+# but it really wouldn't serve any meaningful purpose
+#data$TicketLetter %>% replace_na(replace = "UNKNOWN")
+
+data %>% group_by(TicketLetter) %>% tally(sort = TRUE)
+
+# Are there different column values for one ticket?
+data %>% 
+  group_by(Ticket) %>% 
+  summarise(dis = n_distinct(LastName)) %>% 
+  arrange(desc(dis))
+```
+
+## Filling in Missing Data
+
+There is only one **fare** missing.
+
+```{r missing fare}
+# Which row(s) contain missing data
+data %>% 
+  filter(is.na(Fare))
+
+# Let's find similar values to the missing one
+data %>% 
+  filter(Pclass==3,
+         Sex=="male",
+         Embarked=="S",
+         Age>60)
+
+# Another passenger is very similar to we will use that fare
+data$Fare <- data$Fare %>% 
+  replace(is.na(.), 6.2375)
+```
+
+**Embarked** has 2 missing values. Let's take care of that now.
+
+```{r missing embarked}
+# Which row(s) contain missing data
+data %>% 
+  filter(is.na(Embarked))
+
+# Let's find similar values to the missing two
+data %>% 
+  filter(Pclass==1,
+         Sex=="female",
+         Title=="Miss",
+         grepl('B', Cabin))
+
+# Visualize the likelihood of 'Port of Embarkation' against other variables
+data %>% ggplot(aes(Embarked, Cabin)) + geom_jitter()
+
+# We can rule out Q quite easily
+# How about others
+data %>% ggplot(aes(Embarked, Pclass)) + geom_jitter()
+
+# Looking at similar people, 'S' seems most suited for both missing values
+data$Embarked <- data$Embarked %>% 
+  replace(is.na(.), "S")
+```
+
+**Age** has 263 missing vlaues. Let's get those filled with the most suited values.
+
+```{r missing age}
+# Which row(s) contain missing data
+data %>% 
+  filter(is.na(Age))
+
+# They are certainly too many to fill in, 
+# we have to develop a clever solution.
+# Filling in the missing values with the broadest selection of groups
+impute.mean <- function(x) replace(x, is.na(x), mean(x, na.rm = TRUE))
+data <- data %>%
+    group_by(Pclass, Title, Sex, SibSp, Parch, Embarked) %>%
+    mutate(
+        Age = impute.mean(Age)
+    ) %>% ungroup()
+
+# We only have 28 NA's for Age left, let's reduce the number of groupings
+
+data <- data %>%
+    group_by(Pclass, Title, Sex, Parch, Embarked) %>%
+    mutate(
+        Age = impute.mean(Age)
+    ) %>% ungroup() 
+
+# Now we have only 15 left, let's do something similar
+
+data <- data %>%
+    group_by(Pclass, Title, Sex, Embarked) %>%
+    mutate(
+        Age = impute.mean(Age)
+    ) %>% ungroup()
+
+# Let's address the last remaining passenger (#980).
+# After some investigation, I observed that there are only 2 "Ms" in the data
+# I will assign them both the same age
+
+data <- data %>%
+    group_by(Title) %>%
+    mutate(
+        Age = impute.mean(Age)
+    ) %>% ungroup()
+```
+
+### Whats happening to cabin?
+
+```{r}
+data %>% group_by(Cabin) %>% tally(sort = TRUE)
+
+# With such a high number of missing values form this column,
+# I have decided against including it as a variable to test
+```
+
+### Data Wrap-up
+
+Let's wrap-up the data by excluding the columns that are not of interest, and make it all appropriate format.
+
+```{r}
+data <- data %>% select(-Ticket,
+                -TicketLetter,
+                -Cabin,
+                -FirstMiddleOther)
+
+data$LastName <- as.numeric(data$LastName)
+data$Title <- as.numeric(data$Title)
+data$Sex <- as.numeric(data$Sex)
+data$Embarked <- as.numeric(data$Embarked)
+data$OtherName <- as.numeric(data$OtherName)
+
+
+summary(data)
+```
+
+Write files for supervised learning classificaiton.
+
+```{r}
+# Separate the train and test tibbles
+sets <- split(data, f = data$tibble)
+
+# create new train tibble
+write_csv(x = sets[[2]] %>% select(-tibble), path = "new_train.csv", col_names = TRUE)
+
+# create new test tibble
+write_csv(x = sets[[1]] %>% select(-tibble, -Survived), path = "new_test.csv", col_names = TRUE)
+```
+
+
+```{r}
+knitr::knit_exit()
+```
+
+## Scrap work
+
+Sanity check on all categorical columns
+
+```{r}
+s1 <- train %>% 
+  ggplot() +
+  geom_histogram(aes(Survived), stat = "count") 
+  
+s2 <- train %>% 
+  ggplot() + 
+  geom_histogram(aes(Pclass), stat = "count")
+
+s3 <- train %>% 
+  ggplot() + 
+  geom_histogram(aes(Sex), stat = "count")
+
+s4 <- train %>% 
+  ggplot() + 
+  geom_histogram(aes(SibSp), stat = "count")
+
+s5 <- train %>% 
+  ggplot() + 
+  geom_histogram(aes(Parch), stat = "count")
+
+s6 <- train %>% 
+  ggplot() + 
+  geom_histogram(aes(Embarked), stat = "count")
+
+
+grid.arrange(s1,s2,s3,s4,s5,s6, ncol=3)
+```
