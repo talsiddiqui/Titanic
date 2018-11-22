@@ -9,7 +9,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(tidyverse)
-library(gridExtra)
 theme_set(theme_light())
 ```
 
@@ -254,37 +253,4 @@ write_csv(x = sets[[1]] %>% select(-tibble, -Survived), path = "new_test.csv", c
 
 ```{r}
 knitr::knit_exit()
-```
-
-## Scrap work
-
-Sanity check on all categorical columns
-
-```{r}
-s1 <- train %>% 
-  ggplot() +
-  geom_histogram(aes(Survived), stat = "count") 
-  
-s2 <- train %>% 
-  ggplot() + 
-  geom_histogram(aes(Pclass), stat = "count")
-
-s3 <- train %>% 
-  ggplot() + 
-  geom_histogram(aes(Sex), stat = "count")
-
-s4 <- train %>% 
-  ggplot() + 
-  geom_histogram(aes(SibSp), stat = "count")
-
-s5 <- train %>% 
-  ggplot() + 
-  geom_histogram(aes(Parch), stat = "count")
-
-s6 <- train %>% 
-  ggplot() + 
-  geom_histogram(aes(Embarked), stat = "count")
-
-
-grid.arrange(s1,s2,s3,s4,s5,s6, ncol=3)
 ```
